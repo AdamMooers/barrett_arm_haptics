@@ -56,23 +56,37 @@ protected:
  * intended dynamics. Its output should be fed to a joint position control system
  * or an intermediary system such as the inverse kinematics solver.
  */
-class MassDamperSim : public systems::SingleIO< units::CartesianForce::type, double> {
+class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::CartesianForce::type> , double> {
     public:
 	MassDamperSim(double M, double D, double K, const std::string& sysName = "MassDamperSim") :
-		systems::SingleIO<units::CartesianForce::type, double>(sysName), M(M), D(D), K(K), fz(0),
-        q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(0), x(0) {}
+		systems::SingleIO<boost::tuple<double, units::CartesianForce::type>, double>(sysName), M(M), D(D), K(K), fz(0),
+        q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(0), t_p(0), t_c(0), dT(0) {}
 	virtual ~MassDamperSim() { this->mandatoryCleanUp(); }
 
     protected:
         double M, D, K, fz;         // Mass, Damper, Spring, input force
         double q_ddot, q_dot, q;    // Spring acceleration, velocity, position
         double q_dot_p, q_p;        // Spring previous velocity, previous position
-	    double x;
-	    virtual void operate() {
-            fz = this->input.getValue()[2];
-            
+        double t_p, t_c, dT;        // time previous, time current, dT
 
-		    //this->outputValue->setData(&jp);
+	    virtual void operate() {
+            fz = boost::get<1>(this->input.getValue())[2];
+
+            // Find the elapsed time
+            t_c = boost::get<0>(this->input.getValue());
+            dT = t_c - t_p;
+           
+            // Update the mass-damper simulation
+            q_ddot = (fz - D*q_dot_p - K*q_p)/M;
+            q_dot = q_dot_p + q_ddot*dT;
+            q = q_p + q_dot*dT;
+
+            // Update previous values for the next iteration
+            t_p = t_c;
+            q_dot_p = q_dot;
+            q_p = q;
+
+		    this->outputValue->setData(&q);
 	    }
 
     private:
@@ -81,12 +95,12 @@ class MassDamperSim : public systems::SingleIO< units::CartesianForce::type, dou
 
 // Controls the individual joints
 template <size_t DOF>
-class InverseK : public systems::SingleIO< typename units::CartesianForce::type, typename units::JointPositions<DOF>::type> {
+class InverseK : public systems::SingleIO< double, typename units::JointPositions<DOF>::type> {
 	BARRETT_UNITS_TEMPLATE_TYPEDEFS(DOF);
 
 public:
 	InverseK(jp_type startPos, const std::string& sysName = "InverseK") :
-		systems::SingleIO<cf_type, jp_type>(sysName), jp(startPos), jp_0(jp) {
+		systems::SingleIO<double, jp_type>(sysName), jp(startPos), jp_0(jp) {
 		    i1 = 2;
 			i2 = 3;
 		}
@@ -99,7 +113,7 @@ protected:
 	int i1, i2;
 
 	virtual void operate() {
-		fz = this->input.getValue()[2];
+		fz = this->input.getValue();
 
 		jp[i1] = fz/100.0+jp_0[i1];
 
@@ -115,15 +129,24 @@ template<size_t DOF>
 int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) {
 	BARRETT_UNITS_TEMPLATE_TYPEDEFS(DOF);
 
-	char tmpFile[] = "/tmp/btXXXXXX";
-	if (mkstemp(tmpFile) == -1) {
-		printf("ERROR: Couldn't create temporary file!\n");
-		return 1;
+    // Set start position, depending on robot type and configuration.
+	jp_type startPos(0.0);
+	if (DOF > 3) {
+		// WAM
+		startPos[1] = -M_PI_2;
+		startPos[3] = M_PI_2;
+	} else {
+		std::cout << "Error: No known robot with DOF < 3. Quitting." << std::endl;
+		// error
+		return -1;
 	}
 
     // Configure the force/torque sensor
     ftSystem<DOF> fts(pm);
-
+    InverseK<DOF> jpc(startPos);
+    systems::TupleGrouper<double, cf_type > mdsInput;
+    MassDamperSim mdsSim(0.1, 0.5, 1);   // Spring Constants: M, D, K
+  
 	wam.gravityCompensate();
 
 	const double TRANSITION_DURATION = 0.5;  // seconds
@@ -138,21 +161,16 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	for(size_t i = 0; i < DOF; ++i)
 		rt_jp_cmd[i] = rLimit[i];
 
-    // Set start position, depending on robot type and configuration.
-	jp_type startPos(0.0);
-	if (DOF > 3) {
-		// WAM
-		startPos[1] = -M_PI_2;
-		startPos[3] = M_PI_2;
-	} else {
-		std::cout << "Error: No known robot with DOF < 3. Quitting." << std::endl;
-		// error
-		return -1;
-	}
-
 	systems::Ramp time(pm.getExecutionManager(), 1.0);
 
-	printf("Press [Enter] to start the mass-damper simulation using joint position control.");
+    // Connect the systems
+    systems::connect(time.output, fts.input);
+    systems::connect(time.output, mdsInput.template getInput<0>());
+    systems::connect(fts.output, mdsInput.template getInput<1>());
+    systems::connect(mdsInput.output, mdsSim.input);
+    systems::connect(mdsSim.output, jpc.input);
+
+	printf("Press [Enter] to start the mass-damper simulation.");
 	waitForEnter();
 
 	wam.moveTo(startPos);
@@ -160,11 +178,6 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	//Indicate the current position and the maximum rate limit to the rate limiter
 	jp_rl.setCurVal(wam.getJointPositions());
 	jp_rl.setLimit(rt_jp_cmd);
-
-	InverseK<DOF> jpc(startPos);
-
-    systems::connect(time.output, fts.input);
-    systems::connect(fts.output, jpc.input);
 
 	//Enforces that the individual joints move less than or equal to the above mentioned rate limit
 	systems::connect(jpc.output, jp_rl.input);
