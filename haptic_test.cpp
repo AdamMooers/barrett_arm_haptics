@@ -45,47 +45,69 @@ public:
 protected:
 	virtual void operate() {
         fts->update(true);
-
-        //boost::get<0>(ftsIn) = fts->getForce();
-
         outputValue->setData(&fts->getForce());  // Push data into the output
 	}
 
     ForceTorqueSensor* fts;
-    //boost::tuple<cf_type> ftsIn;
+};
+
+/**
+ * Controls the real-time mass damper spring simulation. This system simulates the
+ * intended dynamics. Its output should be fed to a joint position control system
+ * or an intermediary system such as the inverse kinematics solver.
+ */
+class MassDamperSim : public systems::SingleIO< units::CartesianForce::type, double> {
+    public:
+	MassDamperSim(double M, double D, double K, const std::string& sysName = "MassDamperSim") :
+		systems::SingleIO<units::CartesianForce::type, double>(sysName), M(M), D(D), K(K), fz(0),
+        q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(0), x(0) {}
+	virtual ~MassDamperSim() { this->mandatoryCleanUp(); }
+
+    protected:
+        double M, D, K, fz;         // Mass, Damper, Spring, input force
+        double q_ddot, q_dot, q;    // Spring acceleration, velocity, position
+        double q_dot_p, q_p;        // Spring previous velocity, previous position
+	    double x;
+	    virtual void operate() {
+            fz = this->input.getValue()[2];
+            
+
+		    //this->outputValue->setData(&jp);
+	    }
+
+    private:
+	    DISALLOW_COPY_AND_ASSIGN(MassDamperSim);
 };
 
 // Controls the individual joints
 template <size_t DOF>
-class JpCircle : public systems::SingleIO< typename units::CartesianForce::type, typename units::JointPositions<DOF>::type> {
+class InverseK : public systems::SingleIO< typename units::CartesianForce::type, typename units::JointPositions<DOF>::type> {
 	BARRETT_UNITS_TEMPLATE_TYPEDEFS(DOF);
 
 public:
-	JpCircle(jp_type startPos, double amplitude, double omega, const std::string& sysName = "JpCircle") :
-		systems::SingleIO<cf_type, jp_type>(sysName), jp(startPos), jp_0(jp), amp(amplitude), omega(omega) {
+	InverseK(jp_type startPos, const std::string& sysName = "InverseK") :
+		systems::SingleIO<cf_type, jp_type>(sysName), jp(startPos), jp_0(jp) {
 		    i1 = 2;
 			i2 = 3;
 		}
-	virtual ~JpCircle() { this->mandatoryCleanUp(); }
+	virtual ~InverseK() { this->mandatoryCleanUp(); }
 
 protected:
 	jp_type jp;
 	jp_type jp_0;
-	double amp, omega;
-	double theta;
+	double fz;
 	int i1, i2;
 
 	virtual void operate() {
-		theta = this->input.getValue()[2];
+		fz = this->input.getValue()[2];
 
-		jp[i1] = theta/100.0+jp_0[i1];
-		//jp[i2] = amp * (std::cos(theta) - 1.0) + jp_0[i2];
+		jp[i1] = fz/100.0+jp_0[i1];
 
 		this->outputValue->setData(&jp);
 	}
 
 private:
-	DISALLOW_COPY_AND_ASSIGN(JpCircle);
+	DISALLOW_COPY_AND_ASSIGN(InverseK);
 };
 
 
@@ -106,10 +128,6 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 
 	const double TRANSITION_DURATION = 0.5;  // seconds
 
-	const double JP_AMPLITUDE = 0.4;    // radians
-	const double CP_AMPLITUDE = 0.1;    // meters
-	const double FREQUENCY = 1.0;       // rad/s
-
 	//Rate Limiter
 	jp_type rt_jp_cmd;
 	systems::RateLimiter<jp_type> jp_rl;
@@ -120,12 +138,12 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	for(size_t i = 0; i < DOF; ++i)
 		rt_jp_cmd[i] = rLimit[i];
 
-  // Set start position, depending on robot type and configuration.
+    // Set start position, depending on robot type and configuration.
 	jp_type startPos(0.0);
 	if (DOF > 3) {
 		// WAM
 		startPos[1] = -M_PI_2;
-		startPos[3] = M_PI_2 + JP_AMPLITUDE;
+		startPos[3] = M_PI_2;
 	} else {
 		std::cout << "Error: No known robot with DOF < 3. Quitting." << std::endl;
 		// error
@@ -134,16 +152,16 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 
 	systems::Ramp time(pm.getExecutionManager(), 1.0);
 
-
-	printf("Press [Enter] to move the end-point in circles using joint position control.");
+	printf("Press [Enter] to start the mass-damper simulation using joint position control.");
 	waitForEnter();
 
 	wam.moveTo(startPos);
+
 	//Indicate the current position and the maximum rate limit to the rate limiter
 	jp_rl.setCurVal(wam.getJointPositions());
 	jp_rl.setLimit(rt_jp_cmd);
 
-	JpCircle<DOF> jpc(startPos, JP_AMPLITUDE, FREQUENCY);
+	InverseK<DOF> jpc(startPos);
 
     systems::connect(time.output, fts.input);
     systems::connect(fts.output, jpc.input);
@@ -156,10 +174,6 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	printf("Press [Enter] to stop.");
 	waitForEnter();
 	time.smoothStop(TRANSITION_DURATION);
-	wam.idle();
-
-	printf("Press [Enter] to return home.");
-	waitForEnter();
 	wam.moveHome();
 	wam.idle();
 
