@@ -70,7 +70,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
         double t_p, t_c, dT;        // time previous, time current, dT
 
 	    virtual void operate() {
-            fz = boost::get<1>(this->input.getValue())[2];
+            fz = boost::get<1>(this->input.getValue())[0];
 
             // Find the elapsed time
             t_c = boost::get<0>(this->input.getValue());
@@ -100,25 +100,53 @@ class InverseK : public systems::SingleIO< double, typename units::JointPosition
 
 public:
 	InverseK(jp_type startPos, const std::string& sysName = "InverseK") :
-		systems::SingleIO<double, jp_type>(sysName), jp(startPos), jp_0(jp) {
-		    i1 = 2;
-			i2 = 3;
+		systems::SingleIO<double, jp_type>(sysName), jp(startPos), jp_0(jp), jp_offset(0) {
+		    i1 = 1;     // j2
+			i2 = 3;     // j4
+
+            x_offset = 0.63;    // Approximately the center of the range
+
+            // Joints are not inline
+            l_1 = std::sqrt(std::pow(0.55,2)+std::pow(0.045,2));
+            l_2 = std::sqrt(std::pow(0.35,2)+std::pow(0.045,2));
+
+            
+            // Joint angles must be offset as well
+            jp_offset
 		}
 	virtual ~InverseK() { this->mandatoryCleanUp(); }
 
 protected:
 	jp_type jp;
 	jp_type jp_0;
-	double fz;
+    jp_type jp_offset;
+    double x_offset;    // Offset to serve as the origin or resting position
+	double l_1, l_2;
 	int i1, i2;
 
 	virtual void operate() {
-		fz = this->input.getValue();
-
-		jp[i1] = fz/100.0+jp_0[i1];
+		jp[i1] = this->input.getValue()+jp_0[i1];
 
 		this->outputValue->setData(&jp);
 	}
+
+    /**
+     * Updates the joints labeled i1 and i2 in the jp array. The
+     * joint angles are derived from the x,y coordinates given.
+     */
+    void compute_inverse_2D(double x, double y)
+    {
+        x += x_offset;
+
+        // Compute theta1
+        double l_squared = x*x + y*y;
+        double gamma = std::acos((l_squared + l_1*l_1 - l_2*l_2)/(2*l_1*l));
+        jp[i1] = std::atan2(y,x) - gamma;
+
+        // Compute theta2
+        jp[i2] = std::atan2((y - l_1*std::sin(jp[i1])) / (x - l_1*cos(jp[i1])));
+        jp[i2] -= jp[i1];
+    }
 
 private:
 	DISALLOW_COPY_AND_ASSIGN(InverseK);
@@ -145,7 +173,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     ftSystem<DOF> fts(pm);
     InverseK<DOF> jpc(startPos);
     systems::TupleGrouper<double, cf_type > mdsInput;
-    MassDamperSim mdsSim(0.1, 0.5, 1);   // Spring Constants: M, D, K
+    MassDamperSim mdsSim(0.2, 1, 40);   // Spring Constants: M, D, K
   
 	wam.gravityCompensate();
 
@@ -156,7 +184,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	systems::RateLimiter<jp_type> jp_rl;
 
 	//Sets the joints to move at 1 m/s
-	const double rLimit[] = {1, 1, 1, 1, 1, 1, 1};
+	const double rLimit[] = {2, 2, 2, 2, 2, 2, 2};
 
 	for(size_t i = 0; i < DOF; ++i)
 		rt_jp_cmd[i] = rLimit[i];
