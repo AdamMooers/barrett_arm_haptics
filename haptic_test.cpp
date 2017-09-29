@@ -99,33 +99,41 @@ class InverseK : public systems::SingleIO< double, typename units::JointPosition
 	BARRETT_UNITS_TEMPLATE_TYPEDEFS(DOF);
 
 public:
-	InverseK(jp_type startPos, const std::string& sysName = "InverseK") :
-		systems::SingleIO<double, jp_type>(sysName), jp(startPos), jp_0(jp), jp_offset(0) {
+	InverseK(const std::string& sysName = "InverseK") :
+		systems::SingleIO<double, jp_type>(sysName), jp_offset(0.0) {
 		    i1 = 1;     // j2
 			i2 = 3;     // j4
 
             x_offset = 0.63;    // Approximately the center of the range
 
-            // Joints are not inline
+            // Joint motor is offset the a zh-parameter
             l_1 = std::sqrt(std::pow(0.55,2)+std::pow(0.045,2));
             l_2 = std::sqrt(std::pow(0.35,2)+std::pow(0.045,2));
 
-            
             // Joint angles must be offset as well
-            jp_offset
+            jp_offset[i1] = std::atan2(0.045,0.55);
+            jp_offset[i2] = std::atan2(0.045,0.35);
 		}
+
 	virtual ~InverseK() { this->mandatoryCleanUp(); }
+
+    // Moves the arm to the start position
+    void gotoStartPosition(systems::Wam<DOF>& wam) {
+        compute_inverse_2D(0, 0);
+        //std::cout << " th1 = " << jp[i1] << std::endl;
+        //std::cout << " th2 = " << jp[i2] << std::endl;
+        wam.moveTo(jp);
+    }
 
 protected:
 	jp_type jp;
-	jp_type jp_0;
     jp_type jp_offset;
     double x_offset;    // Offset to serve as the origin or resting position
 	double l_1, l_2;
 	int i1, i2;
 
 	virtual void operate() {
-		jp[i1] = this->input.getValue()+jp_0[i1];
+        compute_inverse_2D(this->input.getValue(), 0);
 
 		this->outputValue->setData(&jp);
 	}
@@ -140,11 +148,11 @@ protected:
 
         // Compute theta1
         double l_squared = x*x + y*y;
-        double gamma = std::acos((l_squared + l_1*l_1 - l_2*l_2)/(2*l_1*l));
+        double gamma = std::acos((l_squared + l_1*l_1 - l_2*l_2)/(2*l_1*std::sqrt(l_squared)));
         jp[i1] = std::atan2(y,x) - gamma;
 
         // Compute theta2
-        jp[i2] = std::atan2((y - l_1*std::sin(jp[i1])) / (x - l_1*cos(jp[i1])));
+        jp[i2] = std::atan2(y - l_1*std::sin(jp[i1]), x - l_1*cos(jp[i1]));
         jp[i2] -= jp[i1];
     }
 
@@ -157,21 +165,9 @@ template<size_t DOF>
 int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) {
 	BARRETT_UNITS_TEMPLATE_TYPEDEFS(DOF);
 
-    // Set start position, depending on robot type and configuration.
-	jp_type startPos(0.0);
-	if (DOF > 3) {
-		// WAM
-		startPos[1] = -M_PI_2;
-		startPos[3] = M_PI_2;
-	} else {
-		std::cout << "Error: No known robot with DOF < 3. Quitting." << std::endl;
-		// error
-		return -1;
-	}
-
     // Configure the force/torque sensor
     ftSystem<DOF> fts(pm);
-    InverseK<DOF> jpc(startPos);
+    InverseK<DOF> jpc;
     systems::TupleGrouper<double, cf_type > mdsInput;
     MassDamperSim mdsSim(0.2, 1, 40);   // Spring Constants: M, D, K
   
@@ -201,7 +197,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	printf("Press [Enter] to start the mass-damper simulation.");
 	waitForEnter();
 
-	wam.moveTo(startPos);
+    jpc.gotoStartPosition(wam);
 
 	//Indicate the current position and the maximum rate limit to the rate limiter
 	jp_rl.setCurVal(wam.getJointPositions());
