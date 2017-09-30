@@ -70,7 +70,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
         double t_p, t_c, dT;        // time previous, time current, dT
 
 	    virtual void operate() {
-            fz = boost::get<1>(this->input.getValue())[0];
+            fz = boost::get<1>(this->input.getValue())[2];
 
             // Find the elapsed time
             t_c = boost::get<0>(this->input.getValue());
@@ -120,8 +120,6 @@ public:
     // Moves the arm to the start position
     void gotoStartPosition(systems::Wam<DOF>& wam) {
         compute_inverse_2D(0, 0);
-        //std::cout << " th1 = " << jp[i1] << std::endl;
-        //std::cout << " th2 = " << jp[i2] << std::endl;
         wam.moveTo(jp);
     }
 
@@ -134,6 +132,9 @@ protected:
 
 	virtual void operate() {
         compute_inverse_2D(this->input.getValue(), 0);
+
+        // Align the final joint to the x-axis
+        jp[5] = -jp[i1]-jp[i2];
 
 		this->outputValue->setData(&jp);
 	}
@@ -169,7 +170,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     ftSystem<DOF> fts(pm);
     InverseK<DOF> jpc;
     systems::TupleGrouper<double, cf_type > mdsInput;
-    MassDamperSim mdsSim(0.2, 1, 40);   // Spring Constants: M, D, K
+    MassDamperSim mdsSim(0.3, 4, 100);   // Spring Constants: M, D, K
   
 	wam.gravityCompensate();
 
