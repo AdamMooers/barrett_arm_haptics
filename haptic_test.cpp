@@ -104,14 +104,14 @@ public:
 		    i1 = 1;     // j2
 			i2 = 3;     // j4
 
-            x_offset = 0.63;    // Approximately the center of the range
+            x_offset = 0.68;    // Approximately the center of the range
 
             // Joint motor is offset the a zh-parameter
             l_1 = std::sqrt(std::pow(0.55,2)+std::pow(0.045,2));
             l_2 = std::sqrt(std::pow(0.35,2)+std::pow(0.045,2));
 
             // Joint angles must be offset as well
-            jp_offset[i1] = std::atan2(0.045,0.55);
+            jp_offset[i1] = -std::atan2(0.045,0.55) + M_PI_2;
             jp_offset[i2] = std::atan2(0.045,0.35);
 		}
 
@@ -133,10 +133,7 @@ protected:
 	virtual void operate() {
         compute_inverse_2D(this->input.getValue(), 0);
 
-        // Align the final joint to the x-axis
-        jp[5] = -jp[i1]-jp[i2];
-
-		this->outputValue->setData(&jp);
+        this->outputValue->setData(&jp);
 	}
 
     /**
@@ -155,6 +152,12 @@ protected:
         // Compute theta2
         jp[i2] = std::atan2(y - l_1*std::sin(jp[i1]), x - l_1*cos(jp[i1]));
         jp[i2] -= jp[i1];
+
+        // Align the final joint to the x-axis
+        jp[5] = -jp[i1]-jp[i2];
+
+        jp[i1] += jp_offset[i1];
+        jp[i2] += jp_offset[i2];
     }
 
 private:
@@ -170,7 +173,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     ftSystem<DOF> fts(pm);
     InverseK<DOF> jpc;
     systems::TupleGrouper<double, cf_type > mdsInput;
-    MassDamperSim mdsSim(0.3, 4, 100);   // Spring Constants: M, D, K
+    MassDamperSim mdsSim(1, 20, 160);   // Spring Constants: M, D, K
   
 	wam.gravityCompensate();
 
@@ -180,13 +183,19 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	jp_type rt_jp_cmd;
 	systems::RateLimiter<jp_type> jp_rl;
 
-	//Sets the joints to move at 1 m/s
+	//Sets the joints to move at 2 m/s
 	const double rLimit[] = {2, 2, 2, 2, 2, 2, 2};
 
 	for(size_t i = 0; i < DOF; ++i)
 		rt_jp_cmd[i] = rLimit[i];
 
 	systems::Ramp time(pm.getExecutionManager(), 1.0);
+
+    if ( !pm.foundHand() ) {
+		printf("ERROR: No Hand found on bus!\n");
+		return 1;
+	}
+	Hand& hand = *pm.getHand();
 
     // Connect the systems
     systems::connect(time.output, fts.input);
@@ -199,6 +208,8 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	waitForEnter();
 
     jpc.gotoStartPosition(wam);
+    hand.initialize();
+    hand.open();
 
 	//Indicate the current position and the maximum rate limit to the rate limiter
 	jp_rl.setCurVal(wam.getJointPositions());
@@ -212,6 +223,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	printf("Press [Enter] to stop.");
 	waitForEnter();
 	time.smoothStop(TRANSITION_DURATION);
+    hand.close();
 	wam.moveHome();
 	wam.idle();
 
