@@ -81,7 +81,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
             q_dot_p = q_dot;
             q_p = q;
 
-            spring_pos[1] = q;
+            spring_pos[2] = q;
 
 		    this->outputValue->setData(&spring_pos);
 	    }
@@ -132,10 +132,24 @@ protected:
 	int i1, i2;
 
 	virtual void operate() {
-        compute_inverse_2D(this->input.getValue()[0], this->input.getValue()[1]);
+        //compute_inverse_2D(this->input.getValue()[0], this->input.getValue()[1]);
 
+        compute_inverse_3D(this->input.getValue());
         this->outputValue->setData(&jp);
 	}
+
+    /**
+     * Computes the joint angles resulting in the arm moving to the given
+     * cartesian position.
+     */
+    void compute_inverse_3D(const barrett::math::Matrix<3, 1, barrett::units::CartesianPosition> &dest)
+    {
+        // Compute the distance along the x-z line (the transformed x value)
+        double trans_x = std::sqrt(dest[0]*dest[0]+dest[2]*dest[2]);
+        jp[0] = std::atan2(dest[2], dest[0]);
+        
+        compute_inverse_2D(trans_x, dest[1]);
+    }
 
     /**
      * Updates the joints labeled i1 and i2 in the jp array. The
