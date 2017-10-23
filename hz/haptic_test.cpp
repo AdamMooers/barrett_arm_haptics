@@ -1,17 +1,8 @@
-#include <cstdlib>  // For mkstmp()
-#include <cstdio>  // For remove()
-
-#include <iostream>
-#include <string>
-
 #include <boost/tuple/tuple.hpp>
-
-#include <barrett/log.h>
 #include <barrett/units.h>
 #include <barrett/systems.h>
 #include <barrett/products/product_manager.h>
 #include <barrett/detail/stl_utils.h>
-
 #include <barrett/standard_main_function.h>
 
 
@@ -56,18 +47,22 @@ protected:
  * intended dynamics. Its output should be fed to a joint position control system
  * or an intermediary system such as the inverse kinematics solver.
  */
-class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::CartesianForce::type> , double> {
+template <size_t DOF>
+class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::CartesianForce::type> , units::CartesianPosition::type> {
+    BARRETT_UNITS_TEMPLATE_TYPEDEFS(DOF);
+
     public:
-	MassDamperSim(double M, double D, double K, const std::string& sysName = "MassDamperSim") :
-		systems::SingleIO<boost::tuple<double, units::CartesianForce::type>, double>(sysName), M(M), D(D), K(K), fz(0),
-        q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(0), t_p(0), t_c(0), dT(0) {}
-	virtual ~MassDamperSim() { this->mandatoryCleanUp(); }
+	    MassDamperSim(double M, double D, double K, const std::string& sysName = "MassDamperSim") :
+		    systems::SingleIO<boost::tuple<double, units::CartesianForce::type>, cp_type>(sysName), M(M), D(D), K(K), fz(0),
+            q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(0), t_p(0), t_c(0), dT(0), spring_pos(0.0) {}
+	    virtual ~MassDamperSim() { this->mandatoryCleanUp(); }
 
     protected:
         double M, D, K, fz;         // Mass, Damper, Spring, input force
         double q_ddot, q_dot, q;    // Spring acceleration, velocity, position
         double q_dot_p, q_p;        // Spring previous velocity, previous position
         double t_p, t_c, dT;        // time previous, time current, dT
+        cp_type spring_pos;         // 3D position of the end of the spring
 
 	    virtual void operate() {
             fz = boost::get<1>(this->input.getValue())[2];
@@ -86,7 +81,9 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
             q_dot_p = q_dot;
             q_p = q;
 
-		    this->outputValue->setData(&q);
+            spring_pos[1] = q;
+
+		    this->outputValue->setData(&spring_pos);
 	    }
 
     private:
@@ -95,24 +92,28 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
 
 // Controls the individual joints
 template <size_t DOF>
-class InverseK : public systems::SingleIO< double, typename units::JointPositions<DOF>::type> {
+class InverseK : public systems::SingleIO<units::CartesianPosition::type, typename units::JointPositions<DOF>::type> {
 	BARRETT_UNITS_TEMPLATE_TYPEDEFS(DOF);
 
 public:
 	InverseK(const std::string& sysName = "InverseK") :
-		systems::SingleIO<double, jp_type>(sysName), jp_offset(0.0) {
+		systems::SingleIO<cp_type, jp_type>(sysName), jp_offset(0.0) {
 		    i1 = 1;     // j2
 			i2 = 3;     // j4
+
+            double d_3 = 0.55;
+            double d_T = 0.30;
+            double a_3 = 0.045;
 
             x_offset = 0.68;    // Approximately the center of the range
 
             // Joint motor is offset the a zh-parameter
-            l_1 = std::sqrt(std::pow(0.55,2)+std::pow(0.045,2));
-            l_2 = std::sqrt(std::pow(0.35,2)+std::pow(0.045,2));
+            l_1 = std::sqrt(std::pow(d_3,2)+std::pow(a_3,2));
+            l_2 = std::sqrt(std::pow(d_T,2)+std::pow(a_3,2));
 
             // Joint angles must be offset as well
-            jp_offset[i1] = -std::atan2(0.045,0.55) + M_PI_2;
-            jp_offset[i2] = std::atan2(0.045,0.35);
+            jp_offset[i1] = -std::atan2(a_3, d_3) + M_PI_2;
+            jp_offset[i2] = std::atan2(a_3, d_T);
 		}
 
 	virtual ~InverseK() { this->mandatoryCleanUp(); }
@@ -131,7 +132,7 @@ protected:
 	int i1, i2;
 
 	virtual void operate() {
-        compute_inverse_2D(this->input.getValue(), 0);
+        compute_inverse_2D(this->input.getValue()[0], this->input.getValue()[1]);
 
         this->outputValue->setData(&jp);
 	}
@@ -173,7 +174,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     ftSystem<DOF> fts(pm);
     InverseK<DOF> jpc;
     systems::TupleGrouper<double, cf_type > mdsInput;
-    MassDamperSim mdsSim(1, 20, 160);   // Spring Constants: M, D, K
+    MassDamperSim<DOF> mdsSim(1, 5, 200);   // Spring Constants: M, D, K
   
 	wam.gravityCompensate();
 
@@ -210,6 +211,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     jpc.gotoStartPosition(wam);
     hand.initialize();
     hand.open();
+    hand.open(Hand::SPREAD);
 
 	//Indicate the current position and the maximum rate limit to the rate limiter
 	jp_rl.setCurVal(wam.getJointPositions());
