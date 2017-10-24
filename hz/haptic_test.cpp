@@ -65,7 +65,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
         cp_type spring_pos;         // 3D position of the end of the spring
 
 	    virtual void operate() {
-            fz = boost::get<1>(this->input.getValue())[2];
+            fz = boost::get<1>(this->input.getValue())[1];
 
             // Find the elapsed time
             t_c = boost::get<0>(this->input.getValue());
@@ -81,7 +81,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
             q_dot_p = q_dot;
             q_p = q;
 
-            spring_pos[2] = q;
+            spring_pos[2] = q; //std::sin(t_c)/10
 
 		    this->outputValue->setData(&spring_pos);
 	    }
@@ -142,11 +142,18 @@ protected:
      * Computes the joint angles resulting in the arm moving to the given
      * cartesian position.
      */
-    void compute_inverse_3D(const barrett::math::Matrix<3, 1, barrett::units::CartesianPosition> &dest)
+    void compute_inverse_3D(const math::Matrix<3, 1, cp_type> &dest)
     {
         // Compute the distance along the x-z line (the transformed x value)
-        double trans_x = std::sqrt(dest[0]*dest[0]+dest[2]*dest[2]);
-        jp[0] = std::atan2(dest[2], dest[0]);
+        double trans_x = std::sqrt(std::pow(dest[0]+x_offset, 2)+std::pow(dest[2], 2))-x_offset;
+
+        jp[0] = std::atan2(dest[2], dest[0]+x_offset);
+
+        if (std::abs(jp[0]) > M_PI/4)   // Is the joint angle realistic?
+        {
+            jp[0] = 0;
+        }
+        
         
         compute_inverse_2D(trans_x, dest[1]);
     }
