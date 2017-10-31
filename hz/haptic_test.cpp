@@ -26,10 +26,17 @@ public:
             fts = NULL;
 	        if (pm.foundForceTorqueSensor()) {
 		        fts = pm.getForceTorqueSensor();
-		        fts->tare();
 	        }
 
         }
+
+    void tare()
+    {
+        if (fts != NULL)
+        {
+            fts->tare();
+        }
+    }
 
 	virtual ~ftSystem() { mandatoryCleanUp(); }
 
@@ -98,8 +105,8 @@ class InverseK : public systems::SingleIO<units::CartesianPosition::type, typena
 public:
 	InverseK(const std::string& sysName = "InverseK") :
 		systems::SingleIO<cp_type, jp_type>(sysName), jp_offset(0.0) {
-		    i1 = 1;     // j2
-			i2 = 3;     // j4
+		    i1 = 0;
+			i2 = 3;
 
             double d_3 = 0.55;
             double d_T = 0.30;
@@ -120,7 +127,10 @@ public:
 
     // Moves the arm to the start position
     void gotoStartPosition(systems::Wam<DOF>& wam) {
-        compute_inverse_2D(0, 0);
+        math::Matrix<3, 1, cp_type> origin;
+        origin << 0,0,0;
+
+        compute_inverse_3D(origin);
         wam.moveTo(jp);
     }
 
@@ -147,15 +157,11 @@ protected:
         // Compute the distance along the x-z line (the transformed x value)
         double trans_x = std::sqrt(std::pow(dest[0]+x_offset, 2)+std::pow(dest[2], 2))-x_offset;
 
-        jp[0] = std::atan2(dest[2], dest[0]+x_offset);
-
-        if (std::abs(jp[0]) > M_PI/4)   // Is the joint angle realistic?
-        {
-            jp[0] = 0;
-        }
+        jp[1] = -M_PI_2;//std::atan2(dest[2], dest[0]+x_offset);
+        jp[2] = M_PI_2;
         
-        
-        compute_inverse_2D(trans_x, dest[1]);
+        compute_inverse_2D(dest[2],0);//trans_x, dest[1]);
+        jp[5] = jp[i1]-jp[i2];
     }
 
     /**
@@ -176,8 +182,6 @@ protected:
         jp[i2] -= jp[i1];
 
         // Align the final joint to the x-axis
-        jp[5] = -jp[i1]-jp[i2];
-
         jp[i1] += jp_offset[i1];
         jp[i2] += jp_offset[i2];
     }
@@ -195,7 +199,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     ftSystem<DOF> fts(pm);
     InverseK<DOF> jpc;
     systems::TupleGrouper<double, cf_type > mdsInput;
-    MassDamperSim<DOF> mdsSim(1, 5, 200);   // Spring Constants: M, D, K
+    MassDamperSim<DOF> mdsSim(5, 20, 150);   // Spring Constants: M, D, K
   
 	wam.gravityCompensate();
 
@@ -241,6 +245,9 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	//Enforces that the individual joints move less than or equal to the above mentioned rate limit
 	systems::connect(jpc.output, jp_rl.input);
 	wam.trackReferenceSignal(jp_rl.output);
+
+    fts.tare();
+
 	time.smoothStart(TRANSITION_DURATION);
 
 	printf("Press [Enter] to stop.");
