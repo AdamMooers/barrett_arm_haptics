@@ -60,26 +60,26 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
 
     public:
 	    MassDamperSim(double M, double D, double K, const std::string& sysName = "MassDamperSim") :
-		    systems::SingleIO<boost::tuple<double, units::CartesianForce::type>, cp_type>(sysName), M(M), D(D), K(K), fz(0),
+		    systems::SingleIO<boost::tuple<double, units::CartesianForce::type>, cp_type>(sysName), M(M), D(D), K(K), fy(0),
             q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(0), t_p(0), t_c(0), dT(0), spring_pos(0.0) {}
 	    virtual ~MassDamperSim() { this->mandatoryCleanUp(); }
 
     protected:
-        double M, D, K, fz;         // Mass, Damper, Spring, input force
+        double M, D, K, fy;         // Mass, Damper, Spring, input force
         double q_ddot, q_dot, q;    // Spring acceleration, velocity, position
         double q_dot_p, q_p;        // Spring previous velocity, previous position
         double t_p, t_c, dT;        // time previous, time current, dT
         cp_type spring_pos;         // 3D position of the end of the spring
 
 	    virtual void operate() {
-            fz = boost::get<1>(this->input.getValue())[1];
+            fy = boost::get<1>(this->input.getValue())[0];
 
             // Find the elapsed time
             t_c = boost::get<0>(this->input.getValue());
             dT = t_c - t_p;
            
             // Update the mass-damper simulation
-            q_ddot = (fz - D*q_dot_p - K*q_p)/M;
+            q_ddot = (fy - D*q_dot_p - K*q_p)/M;
             q_dot = q_dot_p + q_ddot*dT;
             q = q_p + q_dot*dT;
 
@@ -88,7 +88,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
             q_dot_p = q_dot;
             q_p = q;
 
-            spring_pos[2] = q; //std::sin(t_c)/10
+            spring_pos[1] = q;//std::sin(t_c)/7;
 
 		    this->outputValue->setData(&spring_pos);
 	    }
@@ -119,7 +119,7 @@ public:
             l_2 = std::sqrt(std::pow(d_T,2)+std::pow(a_3,2));
 
             // Joint angles must be offset as well
-            jp_offset[i1] = -std::atan2(a_3, d_3) + M_PI_2;
+            jp_offset[i1] = -std::atan2(a_3, d_3);
             jp_offset[i2] = std::atan2(a_3, d_T);
 		}
 
@@ -157,11 +157,11 @@ protected:
         // Compute the distance along the x-z line (the transformed x value)
         double trans_x = std::sqrt(std::pow(dest[0]+x_offset, 2)+std::pow(dest[2], 2))-x_offset;
 
-        jp[1] = -M_PI_2;//std::atan2(dest[2], dest[0]+x_offset);
-        jp[2] = M_PI_2;
+        jp[1] = -M_PI_2-std::atan2(dest[2], dest[0]+x_offset);
+        jp[2] = -M_PI_2;
         
-        compute_inverse_2D(dest[2],0);//trans_x, dest[1]);
-        jp[5] = jp[i1]-jp[i2];
+        compute_inverse_2D(trans_x,dest[1]);
+        jp[5] = -jp[i1]-jp[i2];
     }
 
     /**
@@ -199,7 +199,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     ftSystem<DOF> fts(pm);
     InverseK<DOF> jpc;
     systems::TupleGrouper<double, cf_type > mdsInput;
-    MassDamperSim<DOF> mdsSim(5, 20, 150);   // Spring Constants: M, D, K
+    MassDamperSim<DOF> mdsSim(2, 12, 1);   // Spring Constants: M, D, K
   
 	wam.gravityCompensate();
 
@@ -253,7 +253,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	printf("Press [Enter] to stop.");
 	waitForEnter();
 	time.smoothStop(TRANSITION_DURATION);
-    hand.close();
+    hand.open();
 	wam.moveHome();
 	wam.idle();
 
