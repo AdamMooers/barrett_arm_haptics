@@ -59,9 +59,11 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
     BARRETT_UNITS_TEMPLATE_TYPEDEFS(DOF);
 
     public:
-	    MassDamperSim(double M, double D, double K, const std::string& sysName = "MassDamperSim") :
-		    systems::SingleIO<boost::tuple<double, units::CartesianForce::type>, cp_type>(sysName), M(M), D(D), K(K), fy(0),
-            q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(0), t_p(0), t_c(0), dT(0), spring_pos(0.0) {}
+	    MassDamperSim(double M, double D, double K, double dist_lim, const std::string& sysName = "MassDamperSim") :
+		    systems::SingleIO<boost::tuple<double, units::CartesianForce::type>, cp_type>(sysName), M(M), D(D), K(K),
+            fy(0), q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(0), t_p(0), t_c(0), dT(0), dist_lim(dist_lim), spring_pos(0.0) {
+            }
+
 	    virtual ~MassDamperSim() { this->mandatoryCleanUp(); }
 
     protected:
@@ -69,6 +71,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
         double q_ddot, q_dot, q;    // Spring acceleration, velocity, position
         double q_dot_p, q_p;        // Spring previous velocity, previous position
         double t_p, t_c, dT;        // time previous, time current, dT
+        double dist_lim;            // limits the maximum value the spring can trvel to prevent singularities
         cp_type spring_pos;         // 3D position of the end of the spring
 
 	    virtual void operate() {
@@ -82,11 +85,15 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
             q_ddot = (fy - D*q_dot_p - K*q_p)/M;
             q_dot = q_dot_p + q_ddot*dT;
             q = q_p + q_dot*dT;
+            t_p = t_c;
 
             // Update previous values for the next iteration
-            t_p = t_c;
-            q_dot_p = q_dot;
-            q_p = q;
+            if (std::abs(q) < dist_lim || (fy>0 && q<0) || (fy<0 && q>0)) {
+                q_dot_p = q_dot;
+                q_p = q;
+            } else {
+                q_dot_p /= 2;
+            }
 
             spring_pos[1] = q;//std::sin(t_c)/7;
 
@@ -199,7 +206,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     ftSystem<DOF> fts(pm);
     InverseK<DOF> jpc;
     systems::TupleGrouper<double, cf_type > mdsInput;
-    MassDamperSim<DOF> mdsSim(2, 12, 1);   // Spring Constants: M, D, K
+    MassDamperSim<DOF> mdsSim(2, 12, 1, 0.2);   // Spring Constants: M, D, K, spring distance
   
 	wam.gravityCompensate();
 
