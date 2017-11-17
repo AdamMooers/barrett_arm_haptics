@@ -1,9 +1,16 @@
+#include <cstdlib>  // For mkstmp()
+#include <cstdio>  // For remove()
+
 #include <boost/tuple/tuple.hpp>
 #include <barrett/units.h>
 #include <barrett/systems.h>
 #include <barrett/products/product_manager.h>
 #include <barrett/detail/stl_utils.h>
+
+#define BARRETT_SMF_VALIDATE_ARGS
 #include <barrett/standard_main_function.h>
+#include <barrett/log.h>
+
 
 
 using namespace barrett;
@@ -61,7 +68,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
     public:
 	    MassDamperSim(double M, double D, double K, double dist_lim, const std::string& sysName = "MassDamperSim") :
 		    systems::SingleIO<boost::tuple<double, units::CartesianForce::type>, cp_type>(sysName), M(M), D(D), K(K),
-            fy(0), q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(0), t_p(0), t_c(0), dT(0), dist_lim(dist_lim), spring_pos(0.0) {
+            fy(0), q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(-dist_lim), t_p(0), t_c(0), dT(0), dist_lim(dist_lim), min_force(0.5), spring_pos(0.0) {
             }
 
 	    virtual ~MassDamperSim() { this->mandatoryCleanUp(); }
@@ -72,10 +79,14 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
         double q_dot_p, q_p;        // Spring previous velocity, previous position
         double t_p, t_c, dT;        // time previous, time current, dT
         double dist_lim;            // limits the maximum value the spring can trvel to prevent singularities
+        double min_force;           // Minimum force to prevent force sensor drift (clip when less than this)
         cp_type spring_pos;         // 3D position of the end of the spring
 
 	    virtual void operate() {
             fy = boost::get<1>(this->input.getValue())[0];
+
+            // Prevent arm from moving when no input
+            fy = std::abs(fy)<min_force?0:fy;
 
             // Find the elapsed time
             t_c = boost::get<0>(this->input.getValue());
@@ -88,7 +99,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
             t_p = t_c;
 
             // Update previous values for the next iteration
-            if (std::abs(q) < dist_lim || (fy>0 && q<0) || (fy<0 && q>0)) {
+            if (std::abs(q) <= dist_lim || (fy>0 && q<0) || (fy<0 && q>0)) {
                 q_dot_p = q_dot;
                 q_p = q;
             } else {
@@ -135,7 +146,7 @@ public:
     // Moves the arm to the start position
     void gotoStartPosition(systems::Wam<DOF>& wam) {
         math::Matrix<3, 1, cp_type> origin;
-        origin << 0,0,0;
+        origin << 0,-0.2,0;
 
         compute_inverse_3D(origin);
         wam.moveTo(jp);
@@ -149,8 +160,6 @@ protected:
 	int i1, i2;
 
 	virtual void operate() {
-        //compute_inverse_2D(this->input.getValue()[0], this->input.getValue()[1]);
-
         compute_inverse_3D(this->input.getValue());
         this->outputValue->setData(&jp);
 	}
@@ -197,6 +206,13 @@ private:
 	DISALLOW_COPY_AND_ASSIGN(InverseK);
 };
 
+bool validate_args(int argc, char** argv) {
+	if (argc != 2) {
+		printf("Usage: %s <fileName>\n", argv[0]);
+		return false;
+	}
+	return true;
+}
 
 template<size_t DOF>
 int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) {
@@ -206,7 +222,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     ftSystem<DOF> fts(pm);
     InverseK<DOF> jpc;
     systems::TupleGrouper<double, cf_type > mdsInput;
-    MassDamperSim<DOF> mdsSim(2, 12, 1, 0.2);   // Spring Constants: M, D, K, spring distance
+    MassDamperSim<DOF> mdsSim(2, 12, 0, 0.2);   // Spring Constants: M, D, K, spring distance
   
 	wam.gravityCompensate();
 
@@ -237,6 +253,25 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     systems::connect(mdsInput.output, mdsSim.input);
     systems::connect(mdsSim.output, jpc.input);
 
+    char tmpFile[] = "/tmp/btXXXXXX";
+	if (mkstemp(tmpFile) == -1) {
+		printf("ERROR: Couldn't create temporary file!\n");
+		return 1;
+	}
+
+    // Configure the logger
+    systems::TupleGrouper<double, cf_type, cp_type> tg;
+	connect(time.output, tg.template getInput<0>());
+    connect(fts.output, tg.template getInput<1>());
+    connect(mdsSim.output, tg.template getInput<2>());
+
+    typedef boost::tuple<double, cf_type, cp_type> tuple_type;
+	const size_t PERIOD_MULTIPLIER = 1;
+	systems::PeriodicDataLogger<tuple_type> logger(
+			pm.getExecutionManager(),
+			new log::RealTimeWriter<tuple_type>(tmpFile, PERIOD_MULTIPLIER * pm.getExecutionManager()->getPeriod()),
+			PERIOD_MULTIPLIER);
+
 	printf("Press [Enter] to start the mass-damper simulation.");
 	waitForEnter();
 
@@ -256,10 +291,21 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     fts.tare();
 
 	time.smoothStart(TRANSITION_DURATION);
+    connect(tg.output, logger.input);
 
 	printf("Press [Enter] to stop.");
 	waitForEnter();
 	time.smoothStop(TRANSITION_DURATION);
+
+    // Save the logger info
+    logger.closeLog();
+	printf("Logging stopped.\n");
+
+	log::Reader<tuple_type> lr(tmpFile);
+	lr.exportCSV(argv[1]);
+	printf("Output written to %s.\n", argv[1]);
+	std::remove(tmpFile);
+
     hand.open();
 	wam.moveHome();
 	wam.idle();
@@ -268,3 +314,4 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	pm.getSafetyModule()->waitForMode(SafetyModule::IDLE);
 	return 0;
 }
+
