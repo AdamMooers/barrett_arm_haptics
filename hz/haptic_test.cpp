@@ -68,7 +68,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
     public:
 	    MassDamperSim(double M, double D, double K, double dist_lim, const std::string& sysName = "MassDamperSim") :
 		    systems::SingleIO<boost::tuple<double, units::CartesianForce::type>, cp_type>(sysName), M(M), D(D), K(K),
-            fy(0), q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(-dist_lim), t_p(0), t_c(0), dT(0), dist_lim(dist_lim), min_force(0.5), spring_pos(0.0) {
+            fy(0), q_ddot(0), q_dot(0), q(0), q_dot_p(0), q_p(-dist_lim), t_p(0), t_c(0), dT(0), dist_lim(dist_lim), min_force(0.9), spring_pos(0.0) {
             }
 
 	    virtual ~MassDamperSim() { this->mandatoryCleanUp(); }
@@ -83,7 +83,7 @@ class MassDamperSim : public systems::SingleIO< boost::tuple<double, units::Cart
         cp_type spring_pos;         // 3D position of the end of the spring
 
 	    virtual void operate() {
-            fy = boost::get<1>(this->input.getValue())[0];
+            fy = boost::get<1>(this->input.getValue())[1];
 
             // Prevent arm from moving when no input
             fy = std::abs(fy)<min_force?0:fy;
@@ -178,6 +178,7 @@ protected:
         
         compute_inverse_2D(trans_x,dest[1]);
         jp[5] = -jp[i1]-jp[i2];
+        jp[6] = -M_PI_2;
     }
 
     /**
@@ -222,7 +223,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
     ftSystem<DOF> fts(pm);
     InverseK<DOF> jpc;
     systems::TupleGrouper<double, cf_type > mdsInput;
-    MassDamperSim<DOF> mdsSim(2, 12, 0, 0.2);   // Spring Constants: M, D, K, spring distance
+    MassDamperSim<DOF> mdsSim(10, 50, 0, 0.2);   // Spring Constants: M, D, K, spring distance
   
 	wam.gravityCompensate();
 
@@ -272,23 +273,26 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 			new log::RealTimeWriter<tuple_type>(tmpFile, PERIOD_MULTIPLIER * pm.getExecutionManager()->getPeriod()),
 			PERIOD_MULTIPLIER);
 
-	printf("Press [Enter] to start the mass-damper simulation.");
+	printf("Press [Enter] to move to the start position.");
 	waitForEnter();
 
-    jpc.gotoStartPosition(wam);
     hand.initialize();
-    hand.open();
-    hand.open(Hand::SPREAD);
+    
+    jpc.gotoStartPosition(wam);
+    hand.close(Hand::GRASP);
+    
 
 	//Indicate the current position and the maximum rate limit to the rate limiter
 	jp_rl.setCurVal(wam.getJointPositions());
 	jp_rl.setLimit(rt_jp_cmd);
 
 	//Enforces that the individual joints move less than or equal to the above mentioned rate limit
+	printf("Press [Enter] to tare the force sensor and start.");
+	waitForEnter();
+    fts.tare();
+
 	systems::connect(jpc.output, jp_rl.input);
 	wam.trackReferenceSignal(jp_rl.output);
-
-    fts.tare();
 
 	time.smoothStart(TRANSITION_DURATION);
     connect(tg.output, logger.input);
@@ -306,7 +310,7 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 	printf("Output written to %s.\n", argv[1]);
 	std::remove(tmpFile);
 
-    hand.open();
+    hand.open(Hand::GRASP);
 	wam.moveHome();
 	wam.idle();
 
