@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <cstdlib>  // For mkstmp()
 #include <cstdio>  // For remove()
 
@@ -7,7 +8,7 @@
 #include <barrett/products/product_manager.h>
 #include <barrett/detail/stl_utils.h>
 
-#define BARRETT_SMF_VALIDATE_ARGS
+//#define BARRETT_SMF_VALIDATE_ARGS
 #include <barrett/standard_main_function.h>
 #include <barrett/log.h>
 
@@ -207,13 +208,13 @@ private:
 	DISALLOW_COPY_AND_ASSIGN(InverseK);
 };
 
-bool validate_args(int argc, char** argv) {
+/*bool validate_args(int argc, char** argv) {
 	if (argc != 2) {
 		printf("Usage: %s <fileName>\n", argv[0]);
 		return false;
 	}
 	return true;
-}
+}*/
 
 template<size_t DOF>
 int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) {
@@ -275,41 +276,96 @@ int wam_main(int argc, char** argv, ProductManager& pm, systems::Wam<DOF>& wam) 
 
 	printf("Press [Enter] to move to the start position.");
 	waitForEnter();
-
-    hand.initialize();
-    
     jpc.gotoStartPosition(wam);
-    hand.close(Hand::GRASP);
-    
+    hand.initialize();
 
 	//Indicate the current position and the maximum rate limit to the rate limiter
 	jp_rl.setCurVal(wam.getJointPositions());
 	jp_rl.setLimit(rt_jp_cmd);
-
-	//Enforces that the individual joints move less than or equal to the above mentioned rate limit
-	printf("Press [Enter] to tare the force sensor and start.");
-	waitForEnter();
-    fts.tare();
-
 	systems::connect(jpc.output, jp_rl.input);
-	wam.trackReferenceSignal(jp_rl.output);
-
-	time.smoothStart(TRANSITION_DURATION);
     connect(tg.output, logger.input);
+    
+    int menu_option = 0;
 
-	printf("Press [Enter] to stop.");
-	waitForEnter();
-	time.smoothStop(TRANSITION_DURATION);
+    while (menu_option != 4) {
+        printf( "\nMenu:\n"
+                "1) Launch experiment\n"
+                "2) Open Claw\n"
+                "3) Close Claw\n"
+                "4) Exit\n");
 
-    // Save the logger info
-    logger.closeLog();
-	printf("Logging stopped.\n");
+        if (scanf("%d", &menu_option))
+        {
+            getchar(); // Clean out buffer
+            switch(menu_option)
+            {
+                case(1):
+                {
+                    printf("Logger state: %d\n", logger.isLogging());
 
-	log::Reader<tuple_type> lr(tmpFile);
-	lr.exportCSV(argv[1]);
-	printf("Output written to %s.\n", argv[1]);
-	std::remove(tmpFile);
+	                wam.trackReferenceSignal(jp_rl.output);
 
+	                time.smoothStart(TRANSITION_DURATION);
+
+	                printf("Press [Enter] to stop.");
+	                waitForEnter();
+	                time.smoothStop(TRANSITION_DURATION);
+
+                    // Save the logger info
+                    logger.closeLog();
+	                printf("Logging stopped.\n");
+
+	                log::Reader<tuple_type> lr(tmpFile);
+
+                    char filename[127];
+                    printf("Enter a filename:");
+	                if (scanf("%s", filename))
+                    {
+                        lr.exportCSV(filename);
+	                    std::remove(tmpFile);
+                        
+                        FILE *fp; 
+                        fp = fopen(tmpFile, "w");
+                        fclose(fp);
+
+                        getchar();
+                    }
+                    else
+                    {
+                        printf("Unable to save the file.\n");
+                    }
+                }
+                    break;
+                case(2):
+                {
+                    hand.open(Hand::GRASP);
+                }
+                    break;
+                case(3):
+                {
+                    hand.close(Hand::GRASP);
+                    printf("Press any key to tare the force sensor and continue.");
+	                getchar();
+                    fts.tare();
+                }
+                    break;
+                case(4):
+                {
+                    printf("Exiting...\n");
+                }
+                    break;
+                default:
+                {                
+                    printf("Unknown command. Please try again.\n");
+                }
+                    break;
+            }
+
+        }
+
+    }
+
+    // Shutdown Procedure
     hand.open(Hand::GRASP);
 	wam.moveHome();
 	wam.idle();
